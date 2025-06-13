@@ -27,16 +27,24 @@ module Text.TopDownParser (
 import Control.Applicative
 import Control.Monad (foldM)
 import Control.Monad.ST (ST, runST)
-import Data.Dynamic (Dynamic, Typeable, fromDynamic, toDyn)
 import Data.IntMap (IntMap)
 import qualified Data.IntMap as I
 import Data.IntSet (IntSet)
 import qualified Data.IntSet as S
 import Data.Kind (Type)
-import Data.Maybe (fromJust, fromMaybe)
+import Data.Maybe (fromMaybe)
 import Data.STRef (STRef, modifySTRef', newSTRef, readSTRef)
+import Unsafe.Coerce (unsafeCoerce)
 
 -- import Debug.Trace (trace)
+
+data UnsafeDynamic = forall a. UnsafeDyn a
+
+toUnsafeDyn :: a -> UnsafeDynamic
+toUnsafeDyn = UnsafeDyn
+
+fromUnsafeDyn :: UnsafeDynamic -> a
+fromUnsafeDyn (UnsafeDyn a) = unsafeCoerce a
 
 type Key = Int
 type KeyMap = IntMap
@@ -100,7 +108,7 @@ type KeyContext = [(Key, Int)] -- Key & Counter pairs
 data Stored s m c
   = Stored
   { storedCuts :: !CurtailingNTs
-  , storedResults :: !(E s m c Dynamic)
+  , storedResults :: !(E s m c UnsafeDynamic)
   , storedContext :: !KeyContext
   }
 
@@ -125,7 +133,7 @@ data Grammar (m :: Type -> Type) c a where
   --  ParseText :: [c] -> Grammar m c [c]
   ParseAlt :: Grammar m c a -> Grammar m c a -> Grammar m c a
   ParseSeq :: Grammar m c (a -> b) -> Grammar m c a -> Grammar m c b
-  ParseMemo :: (Typeable a) => Key -> Grammar m c a -> Grammar m c a
+  ParseMemo :: Key -> Grammar m c a -> Grammar m c a
   ParseParsed :: Grammar m c a -> Grammar m c [c]
   ParsePosition :: Grammar m c (Int, Int, Int)
 
@@ -149,7 +157,7 @@ instance Alternative (Grammar m c) where
 char :: (Eq c) => c -> Grammar m c c
 char c = ParseSatisfy (== c)
 
-memoize :: (Typeable a, Enum k) => k -> Grammar m c a -> Grammar m c a
+memoize :: (Enum k) => k -> Grammar m c a -> Grammar m c a
 memoize k = ParseMemo (fromEnum k)
 
 satisfy :: (c -> Bool) -> Grammar m c c
@@ -262,7 +270,7 @@ parse f (ParseMemo etag p) context ib = do
           let !toStore =
                 Stored
                   upCuts
-                  (fmap toDyn results)
+                  (fmap toUnsafeDyn results)
                   (pruneContext upCuts context)
           modifySTRef' memoRef (update toStore)
           return (upCuts, results)
@@ -293,7 +301,7 @@ incContext name (nc@(n, c) : ncs)
   | otherwise = nc : incContext name ncs
 
 lookupT ::
-  (Functor m, Typeable a) =>
+  (Functor m) =>
   Key
   -> KeyContext
   -> KeyMap (Stored s m c)
@@ -302,7 +310,7 @@ lookupT key current mTable =
   do
     memo <- I.lookup key mTable
     let cuts = storedCuts memo
-    let results = fromDyn' <$> storedResults memo
+    let results = fromUnsafeDyn <$> storedResults memo
     if S.null cuts
       then
         return (cuts, results)
@@ -313,7 +321,7 @@ lookupT key current mTable =
           else
             Nothing
   where
-    fromDyn' = fromJust . fromDynamic
+    -- fromDyn' = fromJust . fromDynamic
 
     canReuse :: KeyContext -> KeyContext -> Bool
     canReuse curr stored =
